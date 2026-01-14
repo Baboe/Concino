@@ -247,10 +247,18 @@ async function runOnce(searchUrl, seen, opts = {}) {
     // Optional detector filter (Ben-style: minimal, no deps)
     if (opts.detector === "gold" && newOnes.length > 0) {
       const filtered = [];
+      let debugLeft = opts.debugDetector ? 5 : 0;
 
       for (const u of newOnes) {
         try {
           const { status, text } = await fetchItemPageHtml(u);
+
+          if (debugLeft > 0) {
+            const { pos, neg } = goldKeywordScore(text);
+            const price = extractEurPriceFromHtml(text);
+            console.log(`[debug] ${u} status=${status} pos=${pos} neg=${neg} price=${price} max=${opts.maxPrice}`);
+            debugLeft--;
+          }
 
           // If item page errors/blocked, skip (no spam)
           if (status >= 400) continue;
@@ -319,7 +327,7 @@ function parseArgs(argv) {
   } else {
     const urlArg = argv[2];
     if (!urlArg) {
-      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25]\n');
+      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--debug-detector]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--debug-detector]\n');
       process.exit(1);
     }
     try {
@@ -352,16 +360,18 @@ function parseArgs(argv) {
   const maxPrice =
     maxPriceIdx !== -1 ? Number(argv[maxPriceIdx + 1]) : 25;
 
-  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice };
+  const debugDetector = argv.includes("--debug-detector");
+
+  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, debugDetector };
 }
 
 async function main() {
-  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice } = parseArgs(process.argv);
+  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, debugDetector } = parseArgs(process.argv);
   const seen = loadSeen();
 
   if (!watchSeconds) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet, detector, maxPrice });
+      await runOnce(url, seen, { quiet, detector, maxPrice, debugDetector });
     }
     return;
   }
@@ -371,7 +381,7 @@ async function main() {
   let firstCycle = true;
   while (true) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice });
+      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice, debugDetector });
     }
     firstCycle = false;
     await sleep(watchSeconds * 1000);
