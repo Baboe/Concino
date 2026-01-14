@@ -1,6 +1,6 @@
-// Concino Slice 0.3:
+// Concino Slice 0.4:
 // Vinted search URL -> fetch HTML -> extract item IDs/URLs -> dedupe via seen.json -> print NEW item URLs
-// Adds: retry on transient failures + --watch N polling + --urls file support
+// Adds: retry on transient failures + --watch N polling + --urls file support + gold detector (€25)
 
 const fs = require("fs");
 const path = require("path");
@@ -88,6 +88,92 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function normalizeText(s) {
+  return String(s || "").toLowerCase();
+}
+
+function goldKeywordScore(text) {
+  const t = normalizeText(text);
+
+  // Strong gold signals
+  const positive = [
+    "14k", "18k", "9k", "10k",
+    "585", "750", "375",
+    "k14", "k18",
+    "gold", "goud", "or", "oro",
+    "witgoud", "geelgoud", "roségoud", "rose goud",
+    "massief", "solid gold",
+    "hallmark", "keurmerk", "poinçon", "punze"
+  ];
+
+  // Strong "not solid gold" signals
+  const negative = [
+    "gold plated", "plated", "verguld", "vermeil",
+    "doublé", "double",
+    "stainless", "acier", "inox", "rvs",
+    "bijouterie", "costume", "fantasie", "fashion jewelry"
+  ];
+
+  let pos = 0;
+  for (const k of positive) if (t.includes(k)) pos++;
+
+  let neg = 0;
+  for (const k of negative) if (t.includes(k)) neg++;
+
+  return { pos, neg };
+}
+
+// Best-effort: try to parse a EUR price from the item page HTML.
+// Fail-safe: return null if unsure.
+function extractEurPriceFromHtml(html) {
+  const s = String(html || "");
+
+  // Common JSON-ish patterns
+  const patterns = [
+    /"price"\s*:\s*"(\d+(?:[.,]\d+)?)"/i,
+    /"price"\s*:\s*(\d+(?:[.,]\d+)?)/i,
+    /"amount"\s*:\s*"(\d+(?:[.,]\d+)?)"/i,
+    /"amount"\s*:\s*(\d+(?:[.,]\d+)?)/i,
+    /"item_price"\s*:\s*"(\d+(?:[.,]\d+)?)"/i
+  ];
+
+  for (const re of patterns) {
+    const m = s.match(re);
+    if (!m) continue;
+
+    const raw = m[1].replace(",", ".");
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+
+    // Optional currency sanity check (many pages include EUR)
+    if (s.toUpperCase().includes("EUR") || s.includes("€") || s.includes('"currency":"EUR"')) {
+      return n;
+    }
+
+    // If no currency info, still accept but only if it looks plausible for Vinted
+    if (n >= 0 && n <= 10000) return n;
+  }
+
+  return null;
+}
+
+async function fetchItemPageHtml(itemUrl) {
+  const { status, text } = await fetchHtml(itemUrl);
+  return { status, text };
+}
+
+function isInterestingGoldDealFromHtml(html, maxPrice) {
+  const { pos, neg } = goldKeywordScore(html);
+
+  // Need at least one strong gold indicator and no clear negatives
+  if (!(pos >= 1 && neg === 0)) return false;
+
+  const price = extractEurPriceFromHtml(html);
+  if (price === null) return false; // fail-safe: if we can't read price, don't alert
+
+  return price <= maxPrice;
+}
+
 // One run of the pipeline. Returns { ok: boolean, newUrlsCount: number }
 async function runOnce(searchUrl, seen, opts = {}) {
   const quiet = !!opts.quiet;
@@ -158,6 +244,29 @@ async function runOnce(searchUrl, seen, opts = {}) {
 
     saveSeen(seen);
 
+    // Optional detector filter (Ben-style: minimal, no deps)
+    if (opts.detector === "gold" && newOnes.length > 0) {
+      const filtered = [];
+
+      for (const u of newOnes) {
+        try {
+          const { status, text } = await fetchItemPageHtml(u);
+
+          // If item page errors/blocked, skip (no spam)
+          if (status >= 400) continue;
+
+          if (isInterestingGoldDealFromHtml(text, opts.maxPrice)) {
+            filtered.push(u);
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      newOnes.length = 0;
+      for (const u of filtered) newOnes.push(u);
+    }
+
     // Bootstrap mode: we seed seen.json but do not alert
     if (suppressNew) {
       return { ok: true, newUrlsCount: 0 };
@@ -210,7 +319,7 @@ function parseArgs(argv) {
   } else {
     const urlArg = argv[2];
     if (!urlArg) {
-      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap]\n');
+      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25]\n');
       process.exit(1);
     }
     try {
@@ -234,16 +343,25 @@ function parseArgs(argv) {
 
   const quiet = argv.includes("--quiet");
   const bootstrap = argv.includes("--bootstrap");
-  return { searchUrls, watchSeconds, quiet, bootstrap };
+
+  const detectorIdx = argv.indexOf("--detector");
+  const detector =
+    detectorIdx !== -1 ? String(argv[detectorIdx + 1] || "").toLowerCase() : null;
+
+  const maxPriceIdx = argv.indexOf("--max-price");
+  const maxPrice =
+    maxPriceIdx !== -1 ? Number(argv[maxPriceIdx + 1]) : 25;
+
+  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice };
 }
 
 async function main() {
-  const { searchUrls, watchSeconds, quiet, bootstrap } = parseArgs(process.argv);
+  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice } = parseArgs(process.argv);
   const seen = loadSeen();
 
   if (!watchSeconds) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet });
+      await runOnce(url, seen, { quiet, detector, maxPrice });
     }
     return;
   }
@@ -253,7 +371,7 @@ async function main() {
   let firstCycle = true;
   while (true) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle });
+      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice });
     }
     firstCycle = false;
     await sleep(watchSeconds * 1000);
