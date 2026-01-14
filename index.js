@@ -5,6 +5,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const { fetchHtmlWithPlaywright, closePlaywright } = require("./playwright_fetch");
+
 const SEEN_PATH = path.join(__dirname, "seen.json");
 
 function toItemId(value) {
@@ -196,6 +198,16 @@ function isInterestingGoldDealFromHtml(html, maxPrice) {
   return price <= maxPrice;
 }
 
+function looksLikeChallenge(status, html) {
+  const h = String(html || "");
+  if (status === 401 || status === 403) return true;
+  // Your earlier heuristics: empty extracted items, or known next error page
+  if (h.includes('id="__next_error__"')) return true;
+  if (h.toLowerCase().includes("access denied")) return true;
+  if (h.toLowerCase().includes("captcha")) return true;
+  return false;
+}
+
 // One run of the pipeline. Returns { ok: boolean, newUrlsCount: number }
 async function runOnce(searchUrl, seen, opts = {}) {
   const quiet = !!opts.quiet;
@@ -214,7 +226,11 @@ async function runOnce(searchUrl, seen, opts = {}) {
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const { status, contentType, text } = await fetchHtml(searchUrl);
+    let res = await fetchHtml(searchUrl);
+    if (opts.usePlaywright && looksLikeChallenge(res.status, res.text)) {
+      res = await fetchHtmlWithPlaywright(searchUrl);
+    }
+    const { status, contentType, text } = res;
 
     if (!quiet) {
       console.log("HTTP status :", status);
@@ -280,7 +296,11 @@ async function runOnce(searchUrl, seen, opts = {}) {
       for (let i = 0; i < toCheck; i++) {
         const u = newOnes[i];
         try {
-          const { status, text } = await fetchItemPageHtml(u);
+          let itemRes = await fetchHtml(u);
+          if (opts.usePlaywright && looksLikeChallenge(itemRes.status, itemRes.text)) {
+            itemRes = await fetchHtmlWithPlaywright(u);
+          }
+          const { status, text } = itemRes;
 
           if (debugLeft > 0) {
             const { pos, neg } = goldKeywordScore(text);
@@ -362,7 +382,7 @@ function parseArgs(argv) {
   } else {
     const urlArg = argv[2];
     if (!urlArg) {
-      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--max-check 50] [--debug-detector]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--max-check 50] [--debug-detector]\n');
+      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--max-check 50] [--debug-detector] [--playwright]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--max-check 50] [--debug-detector] [--playwright]\n');
       process.exit(1);
     }
     try {
@@ -400,17 +420,18 @@ function parseArgs(argv) {
     maxCheckIdx !== -1 ? Number(argv[maxCheckIdx + 1]) : 50;
 
   const debugDetector = argv.includes("--debug-detector");
+  const usePlaywright = argv.includes("--playwright");
 
-  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, maxCheck, debugDetector };
+  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, maxCheck, debugDetector, usePlaywright };
 }
 
 async function main() {
-  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, maxCheck, debugDetector } = parseArgs(process.argv);
+  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, maxCheck, debugDetector, usePlaywright } = parseArgs(process.argv);
   const seen = loadSeen();
 
   if (!watchSeconds) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet, detector, maxPrice, maxCheck, debugDetector });
+      await runOnce(url, seen, { quiet, detector, maxPrice, maxCheck, debugDetector, usePlaywright });
     }
     return;
   }
@@ -423,7 +444,7 @@ async function main() {
       if (isCoolingDown(url)) {
         continue;
       }
-      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice, maxCheck, debugDetector, currentSearchUrl: url });
+      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice, maxCheck, debugDetector, usePlaywright, currentSearchUrl: url });
       await jitterSleep();
     }
     firstCycle = false;
@@ -431,6 +452,11 @@ async function main() {
     if (!quiet) console.log("\n---\n");
   }
 }
+
+process.on("SIGINT", async () => {
+  await closePlaywright();
+  process.exit(0);
+});
 
 main().catch((err) => {
   console.error("Fatal error:", err);

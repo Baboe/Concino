@@ -19,5 +19,8 @@
   "bugs": {
     "url": "https://github.com/Baboe/Concino/issues"
   },
-  "homepage": "https://github.com/Baboe/Concino#readme"
+  "homepage": "https://github.com/Baboe/Concino#readme",
+  "dependencies": {
+    "playwright": "^1.57.0"
+  }
 }
