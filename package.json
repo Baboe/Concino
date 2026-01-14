@@ -1,0 +1,23 @@
+{
+  "name": "concino",
+  "version": "1.0.0",
+  "description": "Super charged internet hunter",
+  "main": "index.js",
+  "scripts": {
+    "test": "node smoke.js",
+    "start": "node index.js",
+    "watch": "node index.js --urls .\\urls.txt --watch 60 --quiet --bootstrap",
+    "watchlevis": "node index.js \"https://www.vinted.nl/catalog?search_text=levis\" --watch 60 --quiet --bootstrap"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Baboe/Concino.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Baboe/Concino/issues"
+  },
+  "homepage": "https://github.com/Baboe/Concino#readme"
+}

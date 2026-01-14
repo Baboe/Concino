@@ -1,6 +1,6 @@
-// Concino Slice 0.2:
+// Concino Slice 0.3:
 // Vinted search URL -> fetch HTML -> extract item IDs/URLs -> dedupe via seen.json -> print NEW item URLs
-// Adds: retry on transient failures + --watch N polling
+// Adds: retry on transient failures + --watch N polling + --urls file support
 
 const fs = require("fs");
 const path = require("path");
@@ -89,14 +89,18 @@ function sleep(ms) {
 }
 
 // One run of the pipeline. Returns { ok: boolean, newUrlsCount: number }
-async function runOnce(searchUrl, seen) {
+async function runOnce(searchUrl, seen, opts = {}) {
+  const quiet = !!opts.quiet;
+  const suppressNew = !!opts.suppressNew;
   const base = normalizeBase(searchUrl);
 
-  console.log("Concino Slice 0");
-  console.log("Search URL:", searchUrl);
-  console.log("Seen file :", SEEN_PATH);
-  console.log("Seen count:", seen.size);
-  console.log("Fetching...");
+  if (!quiet) {
+    console.log("Concino Slice 0");
+    console.log("Search URL:", searchUrl);
+    console.log("Seen file :", SEEN_PATH);
+    console.log("Seen count:", seen.size);
+    console.log("Fetching...");
+  }
 
   // Minimal retry: handles transient 500s or empty HTML results
   const maxAttempts = 3;
@@ -104,8 +108,10 @@ async function runOnce(searchUrl, seen) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const { status, contentType, text } = await fetchHtml(searchUrl);
 
-    console.log("HTTP status :", status);
-    console.log("Content-Type:", (contentType.split(";")[0] || "(unknown)"));
+    if (!quiet) {
+      console.log("HTTP status :", status);
+      console.log("Content-Type:", (contentType.split(";")[0] || "(unknown)"));
+    }
 
     // Hard block? Don’t hammer.
     if (isHardBlockedStatus(status)) {
@@ -138,7 +144,7 @@ async function runOnce(searchUrl, seen) {
     }
 
     // Success path
-    console.log("Found item URLs:", urls.length);
+    if (!quiet) console.log("Found item URLs:", urls.length);
 
     const newOnes = [];
     for (const u of urls) {
@@ -152,34 +158,67 @@ async function runOnce(searchUrl, seen) {
 
     saveSeen(seen);
 
+    // Bootstrap mode: we seed seen.json but do not alert
+    if (suppressNew) {
+      return { ok: true, newUrlsCount: 0 };
+    }
+
     if (newOnes.length === 0) {
-      console.log("NEW:", 0);
-      console.log("No new listings since last run.");
+      if (!quiet) {
+        console.log("NEW:", 0);
+        console.log("No new listings since last run.");
+      }
     } else {
-      console.log("NEW:", newOnes.length);
+      const ts = new Date().toISOString();
+      console.log(`\n[${ts}] NEW: ${newOnes.length}`);
       for (const u of newOnes) console.log(u);
     }
 
-    console.log("\nDone.");
+    if (!quiet) console.log("\nDone.");
     return { ok: true, newUrlsCount: newOnes.length };
   }
 
   return { ok: false, newUrlsCount: 0 };
 }
 
-function parseArgs(argv) {
-  const urlArg = argv[2];
-  if (!urlArg) {
-    console.log('Usage:\n  node index.js "<VINTED_SEARCH_URL>" [--watch <seconds>]\n');
-    process.exit(1);
+function loadUrlsFromFile(filePath) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  const lines = raw.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  const urls = [];
+  for (const line of lines) {
+    try {
+      urls.push(new URL(line).toString());
+    } catch {
+      console.error("Invalid URL in file:", line);
+      process.exit(1);
+    }
   }
+  return urls;
+}
 
-  let searchUrl;
-  try {
-    searchUrl = new URL(urlArg).toString();
-  } catch {
-    console.error("Invalid URL:", urlArg);
-    process.exit(1);
+function parseArgs(argv) {
+  const urlsIdx = argv.indexOf("--urls");
+  let searchUrls = [];
+
+  if (urlsIdx !== -1) {
+    const filePath = argv[urlsIdx + 1];
+    if (!filePath) {
+      console.error("Missing file path for --urls");
+      process.exit(1);
+    }
+    searchUrls = loadUrlsFromFile(filePath);
+  } else {
+    const urlArg = argv[2];
+    if (!urlArg) {
+      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap]\n');
+      process.exit(1);
+    }
+    try {
+      searchUrls = [new URL(urlArg).toString()];
+    } catch {
+      console.error("Invalid URL:", urlArg);
+      process.exit(1);
+    }
   }
 
   let watchSeconds = null;
@@ -193,24 +232,32 @@ function parseArgs(argv) {
     watchSeconds = n;
   }
 
-  return { searchUrl, watchSeconds };
+  const quiet = argv.includes("--quiet");
+  const bootstrap = argv.includes("--bootstrap");
+  return { searchUrls, watchSeconds, quiet, bootstrap };
 }
 
 async function main() {
-  const { searchUrl, watchSeconds } = parseArgs(process.argv);
+  const { searchUrls, watchSeconds, quiet, bootstrap } = parseArgs(process.argv);
   const seen = loadSeen();
 
   if (!watchSeconds) {
-    await runOnce(searchUrl, seen);
+    for (const url of searchUrls) {
+      await runOnce(url, seen, { quiet });
+    }
     return;
   }
 
   console.log(`Watch mode ON: polling every ${watchSeconds}s (Ctrl+C to stop)\n`);
 
+  let firstCycle = true;
   while (true) {
-    await runOnce(searchUrl, seen);
+    for (const url of searchUrls) {
+      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle });
+    }
+    firstCycle = false;
     await sleep(watchSeconds * 1000);
-    console.log("\n---\n");
+    if (!quiet) console.log("\n---\n");
   }
 }
 
