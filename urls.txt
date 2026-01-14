@@ -7,3 +7,20 @@ https://www.vinted.nl/catalog?search_text=harry%20potter%201%20wand
 https://www.vinted.nl/catalog?search_text=thomas%20taylor%20harry%20potter%20philosopher%27s%20stone
 https://www.vinted.nl/catalog?search_text=harry%20potter%20first%20impression%20bloomsbury
 https://www.vinted.nl/catalog?search_text=harry%20potter%20eerste%20druk%20bloomsbury
+
+# GOLD mistake queries (NL + FR + DE-ish keywords)
+https://www.vinted.nl/catalog?search_text=gouden%20ring
+https://www.vinted.nl/catalog?search_text=gold%20ring
+https://www.vinted.nl/catalog?search_text=ring%20585
+https://www.vinted.nl/catalog?search_text=585%20ring
+https://www.vinted.nl/catalog?search_text=ring%20750
+https://www.vinted.nl/catalog?search_text=14kt%20ring
+https://www.vinted.nl/catalog?search_text=18kt%20ring
+https://www.vinted.nl/catalog?search_text=witgoud%20ring
+https://www.vinted.nl/catalog?search_text=geelgoud%20ring
+https://www.vinted.nl/catalog?search_text=oude%20ring
+https://www.vinted.nl/catalog?search_text=ringetje
+https://www.vinted.nl/catalog?search_text=erfstuk%20ring
+https://www.vinted.nl/catalog?search_text=poincon%20ring
+https://www.vinted.nl/catalog?search_text=poin%C3%A7on%20ring
+https://www.vinted.nl/catalog?search_text=bloomsbury%201997

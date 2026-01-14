@@ -88,6 +88,28 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const cooldownUntilByUrl = new Map(); // url -> epoch ms
+
+function nowMs() {
+  return Date.now();
+}
+
+function setCooldown(url, seconds) {
+  const until = nowMs() + seconds * 1000;
+  cooldownUntilByUrl.set(url, until);
+}
+
+function isCoolingDown(url) {
+  const until = cooldownUntilByUrl.get(url);
+  if (!until) return false;
+  return nowMs() < until;
+}
+
+async function jitterSleep(minMs = 250, maxMs = 900) {
+  const ms = Math.floor(minMs + Math.random() * (maxMs - minMs));
+  await sleep(ms);
+}
+
 function normalizeText(s) {
   return String(s || "").toLowerCase();
 }
@@ -199,11 +221,16 @@ async function runOnce(searchUrl, seen, opts = {}) {
       console.log("Content-Type:", (contentType.split(";")[0] || "(unknown)"));
     }
 
-    // Hard block? Don’t hammer.
-    if (isHardBlockedStatus(status)) {
-      const snippet = text.slice(0, 250).replace(/\s+/g, " ").trim();
-      console.log("\n⚠️  Hard blocked (401/403/429). Playwright fallback likely needed.");
-      console.log("HTML snippet:", snippet);
+    // Blocked? Cooldown instead of hammering.
+    if (status === 401 || status === 403) {
+      setCooldown(searchUrl, 30 * 60);
+      if (!opts.quiet) console.log(`Blocked (${status}). Cooling down 30m for: ${searchUrl}`);
+      return { ok: false, newUrlsCount: 0 };
+    }
+
+    if (status === 429) {
+      setCooldown(searchUrl, 60 * 60);
+      if (!opts.quiet) console.log(`Rate limited (429). Cooling down 60m for: ${searchUrl}`);
       return { ok: false, newUrlsCount: 0 };
     }
 
@@ -248,8 +275,10 @@ async function runOnce(searchUrl, seen, opts = {}) {
     if (opts.detector === "gold" && newOnes.length > 0) {
       const filtered = [];
       let debugLeft = opts.debugDetector ? 5 : 0;
+      const toCheck = Math.min(newOnes.length, opts.maxCheck);
 
-      for (const u of newOnes) {
+      for (let i = 0; i < toCheck; i++) {
+        const u = newOnes[i];
         try {
           const { status, text } = await fetchItemPageHtml(u);
 
@@ -261,7 +290,13 @@ async function runOnce(searchUrl, seen, opts = {}) {
           }
 
           // If item page errors/blocked, skip (no spam)
-          if (status >= 400) continue;
+          if (status >= 400) {
+            if (status === 429) {
+              setCooldown(opts.currentSearchUrl, 60 * 60);
+              break;
+            }
+            continue;
+          }
 
           if (isInterestingGoldDealFromHtml(text, opts.maxPrice)) {
             filtered.push(u);
@@ -327,7 +362,7 @@ function parseArgs(argv) {
   } else {
     const urlArg = argv[2];
     if (!urlArg) {
-      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--debug-detector]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--debug-detector]\n');
+      console.log('Usage:\n  node index.js "<URL>" [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--max-check 50] [--debug-detector]\n  node index.js --urls urls.txt [--watch N] [--quiet] [--bootstrap] [--detector gold] [--max-price 25] [--max-check 50] [--debug-detector]\n');
       process.exit(1);
     }
     try {
@@ -360,18 +395,22 @@ function parseArgs(argv) {
   const maxPrice =
     maxPriceIdx !== -1 ? Number(argv[maxPriceIdx + 1]) : 25;
 
+  const maxCheckIdx = argv.indexOf("--max-check");
+  const maxCheck =
+    maxCheckIdx !== -1 ? Number(argv[maxCheckIdx + 1]) : 50;
+
   const debugDetector = argv.includes("--debug-detector");
 
-  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, debugDetector };
+  return { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, maxCheck, debugDetector };
 }
 
 async function main() {
-  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, debugDetector } = parseArgs(process.argv);
+  const { searchUrls, watchSeconds, quiet, bootstrap, detector, maxPrice, maxCheck, debugDetector } = parseArgs(process.argv);
   const seen = loadSeen();
 
   if (!watchSeconds) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet, detector, maxPrice, debugDetector });
+      await runOnce(url, seen, { quiet, detector, maxPrice, maxCheck, debugDetector });
     }
     return;
   }
@@ -381,7 +420,11 @@ async function main() {
   let firstCycle = true;
   while (true) {
     for (const url of searchUrls) {
-      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice, debugDetector });
+      if (isCoolingDown(url)) {
+        continue;
+      }
+      await runOnce(url, seen, { quiet, suppressNew: bootstrap && firstCycle, detector, maxPrice, maxCheck, debugDetector, currentSearchUrl: url });
+      await jitterSleep();
     }
     firstCycle = false;
     await sleep(watchSeconds * 1000);
